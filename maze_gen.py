@@ -94,6 +94,8 @@ def genPath(size):
     1 = path to right
     2 = path to bottom
     3 = path to right and bottom
+    4+ important path to right
+    8+ important path to bottom
     """
     s = np.array([[0]*size for _ in range(size)],np.bool)
     ret = np.array([[0]*size for _ in range(size)],np.int8)
@@ -105,8 +107,8 @@ def genPath(size):
             continue
         conn = random.choice(l)
         (xn,yn),t = borderC(conn,(x,y))
-        ret[xn,yn] = t | ret[xn,yn]
-        if random.randrange(3)==0:
+        ret[xn,yn] = (t*0b101) | ret[xn,yn]
+        if random.randrange(4):
             l = [(xb,yb) for xb,yb in border((x,y),size)]
             conn = random.choice(l)
             (xn,yn),t = borderC(conn,(x,y))
@@ -155,7 +157,7 @@ def genRooms(maxsize,amsize,obl):
     return(ret)
 
 def genConn(size,rooms,paths):
-    ret = np.zeros((size,size,2,5))
+    ret = np.zeros((size,size,2,6))
     draw_path(paths)
     for x,y in product(range(size),repeat=2):
         nx,ny = x+1,y+1
@@ -165,14 +167,14 @@ def genConn(size,rooms,paths):
             lst = random.randrange(ly1,ly2+1)
             rst = random.randrange(ry1,ry2+1)
             kn = random.randrange(lx2+2,rx1-1)
-            ret[x,y,0,:] = lx2+1,rx1-1,lst,rst,kn
+            ret[x,y,0,:] = lx2+1,rx1-1,lst,rst,kn,bool(4&paths[x,y])
         if ny < size and 2 & paths[x,y]:
             tx1,ty1,tx2,ty2 = rooms[x,y,:]
             bx1,by1,bx2,by2 = rooms[x,ny,:]
             tst = random.randrange(tx1,tx2+1)
             bst = random.randrange(bx1,bx2+1)
             kn = random.randrange(ty2+2,by1-1)
-            ret[x,y,1,:] = ty2+1,by1-1,tst,bst,kn
+            ret[x,y,1,:] = ty2+1,by1-1,tst,bst,kn,bool(8&paths[x,y])
     return ret
 
 
@@ -204,24 +206,44 @@ def genRoomField(maxsize,amsize):
         else:
             s[t:b,l:r] = 1
     conn = genConn(amsize,rooms,path)
+
     #HORIZ PATHS
     for x,y in product(range(amsize),range(amsize)):
-        lconn,rconn,lst,rst,Hkn = conn[x,y,0,:]
+
+        lconn,rconn,lst,rst,Hkn,Rec = conn[x,y,0,:]
         if (lst,rst,Hkn) == (0,0,0):
             continue
+        conntype = 0 if Rec else random.randrange(3)
         mst,hst = sorted((lst,rst))
-        s[lconn:Hkn+1,lst] = 0
-        s[Hkn:rconn+1,rst] = 0
-        s[Hkn,mst:hst+1] = 0
+        if conntype == 0:
+            s[lconn:Hkn+1,lst] = 0
+            s[Hkn:rconn+1,rst] = 0
+            s[Hkn,mst:hst+1] = 0
+        elif conntype == 1:
+            s[lconn:rconn+1,mst:hst+1] = 5
+        elif conntype == 2:
+            s[lconn:rconn+1,mst:hst+1] = 0
+            s[Hkn,mst:hst+1] = 4
+        elif conntype == 3:
+            s[lconn:rconn+1,mst:hst+1] = 0
     #VERT PATHS
     for x,y in product(range(amsize),range(amsize)):
-        tconn,bconn,tst,bst,Vkn = conn[x,y,1,:]
+        tconn,bconn,tst,bst,Vkn,Rec = conn[x,y,1,:]
         if (tst,bst,Vkn) == (0,0,0):
             continue
+        conntype = 0 if Rec else random.randrange(3)
         mst,hst = sorted((tst,bst))
-        s[tst,tconn:Vkn+1] = 0
-        s[bst,Vkn:bconn+1] = 0
-        s[mst:hst+1,Vkn] = 0
+        if conntype == 0:
+            s[tst,tconn:Vkn+1] = 0
+            s[bst,Vkn:bconn+1] = 0
+            s[mst:hst+1,Vkn] = 0
+        elif conntype == 1:
+            s[mst:hst+1,tconn:bconn+1] = 5
+        elif conntype == 2:
+            s[mst:hst+1,tconn:bconn+1] = 0
+            s[mst:hst+1,Vkn] = 4
+        elif conntype == 3:
+            s[mst:hst+1,tconn:bconn+1] = 0
 
     return(s)
 
@@ -233,7 +255,7 @@ def roomsToFile(s):
     for y in range(h):
         l1 = []
         for x in range(w):
-            l1.append("*+ "[s[x,y]])
+            l1.append("*+  v~"[s[x,y]])
         fff.write("".join(l1)+"\n")
 
 
