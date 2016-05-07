@@ -20,9 +20,15 @@ class Application():
         self.player.lockscreen = True
         self.player.reveal_surroundings()
         self.entities.append(self.player)
+        self.create_enemies("Skeleton",8)
         self.viewx = 0
         self.viewy = 0
         self.frame_rate=30
+    def create_enemies(self,face,amount=1):
+        for _ in range(amount):
+            e = Enemy(self,self.graphics(face))
+            self.entities.append(e)
+
     def on_key_press(self, symbol, modifiers):
         mod = modifiers%16
         if symbol == pygame.K_UP:
@@ -126,9 +132,9 @@ class Graphic:
 class Entity:
     #0=down,1=left,2=up,3=right
     def __init__(self,parent,image):
-        self.parent = parent
+
         self.lockscreen = False
-        self.grid = self.parent.grid
+        self.grid = parent.grid
         self.graph = image
         self.pos = (randrange(self.grid.width-8)+4,randrange(self.grid.height-8)+4)
         self.set_pos(self.pos)
@@ -249,23 +255,32 @@ class Entity:
                 self.grid.discover(x+i,y+j)
 
 class Creature(Entity):
-    def __init__(self,grid,image):
-        Entity.__init__(self,grid,image)
+    def __init__(self,parent,image):
+        Entity.__init__(self,parent,image)
         self.health = 100
         self.damage = 5
         self.skills = []
 
 class Enemy(Entity):
+    def __init__(self,parent,image):
+        Creature.__init__(self,parent,image)
+        self.target = parent.player
+        self.speed = 2
+
     def get_command(self):
-        priordict = {k:v for k,v in self.get_moves_priority() if self.move_valid(k)}
+        priordict = {k:self.get_moves_priority(k)  for k in range(4) if self.move_valid(k)}
+        print(priordict)
         if not priordict:
             return None
-        best_dir = min(range(4),priordict.get)
+        best_dir = min(priordict.keys(),key=priordict.get)
         return (0,best_dir,0)
 
 
-    def get_moves_priority(self):
-        pass
+    def get_moves_priority(self,direction):
+        target = self.moveto_square(direction)
+        x,y = target
+        px,py = self.target.pos
+        return math.sqrt((x-px)*(x-px)+(y-py)*(y-py))
 
 
 
