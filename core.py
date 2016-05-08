@@ -4,6 +4,8 @@ import math
 import time
 from random import randrange
 import json
+from collections import namedtuple
+from functools import partial
 
 class Application():
     def __init__(self):
@@ -16,45 +18,43 @@ class Application():
         self.grid = Grid("grid.txt")
         self.entities = []
         self.graphics = GraphicsLoader()
-        self.player = Creature(self,self.graphics("Soldier_5"))
+        self.player = Creature(self,Player)
         self.player.lockscreen = True
         self.player.reveal_surroundings()
         self.entities.append(self.player)
-        self.create_enemies("Skeleton",8)
+        self.create_enemies(Skeleton,8)
         self.viewx = 0
         self.viewy = 0
         self.frame_rate=30
-    def create_enemies(self,face,amount=1):
+    def create_enemies(self,type_,amount=1):
         for _ in range(amount):
-            e = Enemy(self,self.graphics(face))
+            e = Enemy(self,type_)
             self.entities.append(e)
 
     def on_key_press(self, symbol, modifiers):
         mod = modifiers%16
-        if symbol == pygame.K_UP:
-            self.player.start_move(3,mod&1)
-        elif symbol == pygame.K_DOWN:
-            self.player.start_move(0,mod&1)
-        elif symbol == pygame.K_LEFT:
-            self.player.start_move(1,mod&1)
-        elif symbol == pygame.K_RIGHT:
-            self.player.start_move(2,mod&1)
+        movelist = (pygame.K_DOWN,pygame.K_LEFT,pygame.K_RIGHT,pygame.K_UP)
+        skilllist = (pygame.K_SPACE,pygame.K_q,pygame.K_s,pygame.K_d)
+        if symbol in movelist:
+            self.player.start_move(movelist.index(symbol),bool(mod&1))
+        if symbol in skilllist:
+            self.player.append_command(1,skilllist.index(symbol))
+
     def on_key_release(self, symbol, modifiers):
         mod = modifiers%16
-        if symbol == pygame.K_UP:
-            self.player.stop_move(3)
-        elif symbol == pygame.K_DOWN:
-            self.player.stop_move(0)
-        elif symbol == pygame.K_LEFT:
-            self.player.stop_move(1)
-        elif symbol == pygame.K_RIGHT:
-            self.player.stop_move(2)
+        movelist = (pygame.K_DOWN,pygame.K_LEFT,pygame.K_RIGHT,pygame.K_UP)
+        skilllist = (pygame.K_SPACE,pygame.K_q,pygame.K_s,pygame.K_d)
+        if symbol in movelist:
+            self.player.stop_move(movelist.index(symbol))
+        if symbol in skilllist:
+            self.player.remove_command(1,skilllist.index(symbol))
+
 
     def on_draw(self):
         #self.screen.fill((127,127,255))
         #self.view_window.fill((255,255,255))
         self.grid.on_draw(self.view_window,32)
-        for e in self.entities:
+        for e in sorted(self.entities,key=lambda x:x.pos[1]):
             e.on_draw(self.view_window,32)
         self.screen.blit(self.view_window,(0,0),(self.viewx,self.viewy,480,240))
         self.screen.blit(self.grid.minimap,(380,220))
@@ -94,6 +94,12 @@ class Application():
             current_time = new_time
             self.animate(lost_time)
             self.on_draw()
+    def find_entity(self,position):
+        for i in self.entities:
+            if i.pos == position:
+                return i
+    def destroy_entity(self,target):
+        self.entities.remove(target)
 
 
 class GraphicsLoader():
@@ -112,22 +118,29 @@ class GraphicsLoader():
 class Graphic:
     def __init__(self,filename):
         texture = pygame.image.load(filename+".png")
+        try:
+            alttexture = pygame.image.load(filename+"_Pose.png")
+        except pygame.error:
+            alttexture = texture
         w,h = texture.get_size()
         texture = pygame.transform.scale(texture,(210,(210*h)//w))
+        alttexture = pygame.transform.scale(alttexture,(210,(210*h)//w))
         w,h = texture.get_size()
         self.width,self.height = w//3,h//4
         r = [(x*self.width,y*self.height,self.width,self.height) for y in range(4) for x in range(3)]
-
-        self.textures = [pygame.Surface((self.width,self.height),flags=pygame.SRCALPHA) for _ in range(12)]
+        self.textures = [pygame.Surface((self.width,self.height),flags=pygame.SRCALPHA) for _ in range(24)]
         for i,s in enumerate(r):
 
             self.textures[i].blit(texture,(0,0),s)
+        for i,s in enumerate(r):
+            self.textures[i+12].blit(alttexture,(0,0),s)
         del texture
+        del alttexture
     def __getitem__(self, item):
         return self.textures[item]
 
-    def draw(self,dest,x,y,index):
-        dest.blit(self.textures[index],(x,y))
+    def draw(self,dest,x,y,direction,pose,frame):
+        dest.blit(self.textures[pose*12+direction*3+frame],(x,y))
 
 class Entity:
     #0=down,1=left,2=up,3=right
@@ -143,6 +156,7 @@ class Entity:
         print(self.pos)
         self.direction = 0
         self.movement = 0
+        self.cooldown = 0
         self.speed = 4 #squares/second
         self.command_queue = []
         self.passable_tiles = (0,1)
@@ -165,10 +179,15 @@ class Entity:
         elif dir == 2:
             return dist,0
     def on_draw(self,dest,size):
+        if not self.visible():
+            return
         x,y = self.pixel_pos(size)
         if self.lockscreen:
             pass
-        self.graph.draw(dest, x, y,self.move_animation_frame()+3*self.direction)
+        if self.cooldown <= 0:
+            self.graph.draw(dest, x, y,self.direction,0,self.move_animation_frame())
+        else:
+            self.graph.draw(dest, x, y,self.direction,1,0)
     def moveto_square(self,direction):
         return tuple(old+rel for old,rel in zip(self.pos,self.relative_movement_pos(direction,1)))
     @property
@@ -178,13 +197,13 @@ class Entity:
         return tuple(old*size -size//2 - size//2*parr+rel for old,rel,parr in zip(self.pos,self.relative_movement_pos(),(0,1)))
     def move_skip(self,dt):
         self.movement += dt*self.speed*32
-        if self.lockscreen:
-            sx,sy = self.pixel_pos()
-            #arcade.window_commands.set_viewport(sx-240,sx+240,sy-200,sy+120)
-
     def move(self,dt):
         if self.move_valid():
+            self.reserve(True)
             self.move_skip(dt)
+        else:
+            self.stop()
+
     def move_valid(self,direction=...):
         if direction is ...:
             direction = self.direction
@@ -203,8 +222,9 @@ class Entity:
         """
         Overload this function to create AI monsters
 
-        The commands returned from this function are tuples with the following structure:
-         (command, arg1,arg2, ...)\n
+        This returns a generator containing commands
+        The commands are tuples with the following structure:
+         (command, arg1,arg2, ...)
         command = 0:
             moves the target in a given direction
             arg1: direction (DOWN,LEFT,RIGHT,UP) = (0,1,2,3)
@@ -215,22 +235,30 @@ class Entity:
             arg2: direction
         :return:
         """
-        if self.command_queue:
-            return self.command_queue[0]
+        yield from self.command_queue
     def handle_command(self,dt):
-        next_command = self.get_command()
-        if not next_command:
-            return
-        command,*args = next_command
-        if command==0:
-            self.direction,locked = args
-            if not locked:
-                self.move(dt)
+        for next_command in self.get_command():
+            command,*args = next_command
+            if command==0:
+                self.direction,locked = args
+                if not locked and self.move_valid():
+
+                    self.move(dt)
+                    return
+            elif command==1:
+                index, = args
+                self.use_skill(index)
+                return
     def do_frame(self,dt):
+        if self.cooldown > 0:
+            self.cooldown -= dt
+            return
+        else:
+            self.cooldown = 0
         if self.stopped:
             self.handle_command(dt)
         else:
-            self.move(dt)
+            self.move_skip(dt)
 
 
         if self.movement > 32:
@@ -239,9 +267,22 @@ class Entity:
             if self.command_queue and self.direction in [x[1] for x in self.command_queue if x[0]==0]:
                 self.move(dt)
     def start_move(self,direction,locked=False):
-        self.command_queue.append((0,direction,bool(locked)))
+        self.append_command(0,direction,locked)
     def stop_move(self,direction):
-        self.command_queue = [x for x in self.command_queue if x[1]!= direction or x[0]!=0]
+        self.remove_command(0,direction,...)
+    def append_command(self,command,*args):
+        self.command_queue.append((command,)+args)
+    def remove_command(self,command,*args):
+        """
+        Removes a command from the queue
+        :param command:
+        :param args: Use Ellipsys ... to set wildcards
+        :return:
+        """
+        self.command_queue = [x for x in self.command_queue \
+                              if not(x[0] == command and all(a in (b,...) for a,b in zip(args,x[1:])))]
+    def reserve(self,occupy):
+        self.grid.occupied[self.target_square] = occupy
     def set_pos(self,newpos):
         self.grid.occupied[self.pos] = 0
         self.grid.occupied[newpos] = 1
@@ -249,31 +290,92 @@ class Entity:
         if self.lockscreen:
             self.reveal_surroundings()
     def reveal_surroundings(self,dist=2):
+        w,h = self.grid.data.shape
+        for x in range(w):
+            for y in range(h):
+                self.grid.hide(x,y)
         x,y = self.pos
         for i in range(-dist,dist+1):
             for j in range(-dist,dist+1):
                 self.grid.discover(x+i,y+j)
+    def visible(self):
+        return self.grid.fogofwar[self.pos] or self.grid.fogofwar[self.target_square]
+    def wait(self,seconds):
+        self.cooldown = seconds
+    def use_skill(self,index):
+        pass
+
+
+Creature_stats = namedtuple('Creature_stats','face,health,damage')
+
+Player = Creature_stats("Soldier_5",100,5)
+Skeleton = Creature_stats("Skeleton",20,2)
 
 class Creature(Entity):
-    def __init__(self,parent,image):
-        Entity.__init__(self,parent,image)
-        self.health = 100
-        self.damage = 5
-        self.skills = []
+    def __init__(self,parent,stats):
+        Entity.__init__(self,parent,parent.graphics(stats.face))
+        self.radar = parent.find_entity
+        self.destroy = partial(parent.destroy_entity,self)
+        self.health = stats.health
+        self.maxhealth = stats.health
+        self.damage = stats.damage
 
-class Enemy(Entity):
+        self.skills = [(True,self.attack,0.7)] #Tuples: (active,method,cooldown)
+    def see(self,direction):
+        return(self.radar(self.moveto_square(direction)))
+    def apply_damage(self,amount):
+        self.health -= amount
+        if self.health <= 0:
+            self.die()
+    def die(self):
+        if self.lockscreen:
+            print("The end")
+            #to be fixed to display game over
+        else:
+            self.destroy()
+            self.grid.occupied[self.pos] = False
+    def attack(self):
+        target = self.see(self.direction)
+        if target and isinstance(target,Creature):
+            target.apply_damage(self.damage)
+            return True
+        return False
+    def use_skill(self,index):
+        active,method,cooldown = self.skills[index]
+        if active:
+            if method():
+                self.wait(cooldown)
+    def on_draw(self,dest,size):
+        if self.visible():
+            x,y = self.pixel_pos(size)
+            dest.fill((255,0,0),(x+35-size//2,y-4,size,4))
+            dest.fill((0,255,0),(x+35-size//2,y-4,(size*self.health)//self.maxhealth,4))
+            if self.cooldown > 0:
+                dest.fill((127,127,127),(x+35-size//2,y,size,4))
+                dest.fill((0,0,255),(x+35-size//2,y,(size*(2-self.cooldown))//2,4))
+        Entity.on_draw(self,dest,size)
+
+
+
+class Enemy(Creature):
     def __init__(self,parent,image):
         Creature.__init__(self,parent,image)
         self.target = parent.player
         self.speed = 2
 
     def get_command(self):
+        for i in range(4):
+            target = self.see(i)
+
+            if target and target.lockscreen:
+                if i != self.direction:
+                    yield (0,i,1)
+                yield (1,0)
         priordict = {k:self.get_moves_priority(k)  for k in range(4) if self.move_valid(k)}
-        print(priordict)
         if not priordict:
             return None
-        best_dir = min(priordict.keys(),key=priordict.get)
-        return (0,best_dir,0)
+        best_dirs = sorted(priordict.keys(),key=priordict.get)
+        yield from ((0,b,0) for b in best_dirs)
 
 
     def get_moves_priority(self,direction):
@@ -281,6 +383,8 @@ class Enemy(Entity):
         x,y = target
         px,py = self.target.pos
         return math.sqrt((x-px)*(x-px)+(y-py)*(y-py))
+
+
 
 
 
@@ -302,6 +406,8 @@ class Texturemap_loader:
 class Grid:
     def __init__(self,filename):
         self.texturer = Texturemap_loader()
+        self.cover_texture = pygame.Surface((32,32),flags=pygame.SRCALPHA)
+        self.cover_texture.fill((0,0,0,191))
         import maze_gen
         self.data = maze_gen.genRoomField(10,5)
         width,height = self.data.shape
@@ -311,7 +417,7 @@ class Grid:
         self.texture_map = pygame.Surface((width*32,height*32))
         self.visible_map = pygame.Surface((width*32,height*32))
         self.texture_map.fill((0,255,255))
-        self.visible_map.fill((127,127,127))
+        self.visible_map.fill((0,0,0))
         self.minimap = pygame.Surface((100,100))
         it = np.nditer(self.data, flags=['multi_index'])
         #colors = [arcade.color.WHITE,arcade.color.RED]
@@ -382,8 +488,13 @@ class Grid:
                 for j in (-1,0,1):
                     self.discover(x+i,y+j)
         if self.data[x,y] == 3:
-            for i in (-1,1):
+            for i in (-1,):
                 self.discover(x,y+i)
+    def hide(self,x,y):
+        if not self.fogofwar[x,y]:
+            return
+        self.fogofwar[x,y] = False
+        self.visible_map.blit(self.cover_texture,(x*32,y*32))
 
 
 
@@ -405,8 +516,7 @@ def main():
     window.run()
 
 if __name__ == "__main__":
-    import cProfile
-    cProfile.run('main()',"profile")
+    main()
 
 
 
